@@ -1,10 +1,11 @@
+
+# Imports
 import asyncio
 import yaml
+import logging
 import requests
 import argparse
 import time
-import aiohttp
-import base64
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.traceback import install
@@ -19,7 +20,7 @@ logging_config = {
     "handlers": [RichHandler(console=console, show_time=True, show_path=False)]
 }
 
-import logging
+
 logging.basicConfig(**logging_config)
 logger = logging.getLogger("matrix-bridge")
 
@@ -39,15 +40,16 @@ class MatrixBot(AsyncClient):
         self.last_event_timestamp = int(time.time() * 1000)
     # end __init__
 
-    def transform_mxc_url(self, mxc_url):
+    def transform_mxc_url(self, mxc_url) -> tuple:
         """
         Convert a link to a media file to a direct download link.
         """
         if not mxc_url.startswith("mxc://"):
             return None
         # end if
+
         server_name, media_id = mxc_url.replace("mxc://", "").split("/")
-        return f"{self.bot_config['matrix']['homeserver']}/_matrix/v3/download/{server_name}/{media_id}"
+        return f"/_matrix/client/v1/media/download/{server_name}/{media_id}", media_id
     # end transform_mxc_url
 
     def check_timestamp(self, event):
@@ -66,20 +68,6 @@ class MatrixBot(AsyncClient):
         # end if
         return False
     # end check_timestamp
-
-    async def download_media(self, url):
-        """
-        Télécharge le contenu du fichier et le convertit en base64.
-        """
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    return base64.b64encode(await resp.read()).decode(), resp.status
-                # end if
-                return None, resp.status
-            # end if
-        # end with
-    # end download_media
 
     async def message_callback(self, room: MatrixRoom, event: RoomMessageText):
         """
@@ -110,18 +98,18 @@ class MatrixBot(AsyncClient):
             return
         # end if
 
-        image_url = self.transform_mxc_url(event.url)
-        media_data, response_status = await self.download_media(image_url) if image_url else None
+        # Get HTTP URL of the image
+        media_data = self.transform_mxc_url(event.url)
 
+        # Send to webhook
         logger.info(f"[IMAGE] {event.sender}")
-        if not media_data: logger.warning(f"Cannot download media from URL {image_url}, status code {response_status}")
         payload = {
             "type": "image",
             "sender": event.sender,
-            "url": image_url,
+            "media_url": media_data[0],
             "event_id": event.event_id,
             "room_id": room.room_id,
-            "data": media_data
+            "media_id": media_data[1]
         }
         requests.post(self.bot_config["n8n"]["webhook_url"], json=payload, verify=False)
     # end image_callback
@@ -139,9 +127,10 @@ class MatrixBot(AsyncClient):
         payload = {
             "type": "audio",
             "sender": event.sender,
-            "url": audio_url,
+            "media_url": audio_url[0],
             "event_id": event.event_id,
-            "room_id": room.room_id
+            "room_id": room.room_id,
+            "media_id": audio_url[1]
         }
         requests.post(self.bot_config["n8n"]["webhook_url"], json=payload, verify=False)
     # end audio_callback
@@ -159,9 +148,10 @@ class MatrixBot(AsyncClient):
         payload = {
             "type": "file",
             "sender": event.sender,
-            "url": file_url,
+            "media_url": file_url[0],
             "event_id": event.event_id,
-            "room_id": room.room_id
+            "room_id": room.room_id,
+            "media_id": file_url[1]
         }
         requests.post(self.bot_config["n8n"]["webhook_url"], json=payload, verify=False)
     # end file_callback
